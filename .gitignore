@@ -1,0 +1,13 @@
+/bin
+/pkg
+*.exe
+*.test
+
+.DS_Store
+
+.env
+
+.vscode/
+.idea/
+
+tmp/
