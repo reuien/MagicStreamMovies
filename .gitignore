@@ -11,3 +11,8 @@
 .idea/
 
 tmp/
+
+# Local documentation and AI-generated working files
+docs/
+AI/
+.ai/
