@@ -1,12 +1,12 @@
 package main
 
 import (
-	"fmt"
+	"context"
+	"log"
 
 	"github.com/gin-gonic/gin"
+	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/database"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/routes"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-		"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/database"
 )
 
 func main() {
@@ -14,14 +14,22 @@ func main() {
 	router.GET("/hello", func(c *gin.Context) {
 		c.String(200, "hello magic stream movies!")
 	})
-	// use seperating protected routes  so we can configure the different 
-	// categaries of our routers 
+	// use seperating protected routes  so we can configure the different
+	// categaries of our routers
 
-	var client *mongo.Client = database.Connect()
+	client, err := database.Connect()
+	if err != nil {
+		log.Fatalf("database initialization failed: %v", err)
+	}
+	defer func() {
+		if err := client.Disconnect(context.Background()); err != nil {
+			log.Printf("database disconnect failed: %v", err)
+		}
+	}()
 
 	routes.SetupUnprotectedRoutes(router)
-	routes.SetupProtectedRoutes(router,client)
+	routes.SetupProtectedRoutes(router, client)
 	if err := router.Run(":8080"); err != nil {
-		fmt.Println("Failed to start server", err)
+		log.Printf("failed to start server: %v", err)
 	}
 }

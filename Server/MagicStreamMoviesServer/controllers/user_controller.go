@@ -15,7 +15,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var userCollection mongo.Collection = *database.OpenCollection("users")
+func userStore() *mongo.Collection {
+	return database.OpenCollection("users")
+}
 
 func HashPassword(password string) (string, error) {
 	hashPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -44,7 +46,7 @@ func RegisterUser() gin.HandlerFunc {
 		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
 		defer cancel()
 
-		count, err := userCollection.CountDocuments(ctx, bson.M{"email": user.Email})
+		count, err := userStore().CountDocuments(ctx, bson.M{"email": user.Email})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing user!"})
 			return
@@ -57,7 +59,7 @@ func RegisterUser() gin.HandlerFunc {
 		user.CreatedAt = time.Now()
 		user.UpdatedAt = time.Now()
 		user.Password = hashedPassword
-		result, err := userCollection.InsertOne(ctx, user)
+		result, err := userStore().InsertOne(ctx, user)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
 			return
@@ -77,7 +79,7 @@ func LoginUser() gin.HandlerFunc {
 		defer cancel()
 		var foundUser models.User
 
-		err := userCollection.FindOne(ctx, bson.M{"email": userLogin.Email}).Decode(&foundUser)
+		err := userStore().FindOne(ctx, bson.M{"email": userLogin.Email}).Decode(&foundUser)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password !"})
 			return
@@ -96,7 +98,8 @@ func LoginUser() gin.HandlerFunc {
 		}
 		err = utils.UpdateAllTokens(foundUser.UserID, token, refreshToken)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error":"failed to update token! "})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update token!"})
+			return
 		}
 		c.JSON(http.StatusOK, models.UserResponse{
 			UserId:          foundUser.UserID,

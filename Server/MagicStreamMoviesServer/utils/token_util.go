@@ -3,14 +3,15 @@ package utils
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/database"
 	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 /*
@@ -30,11 +31,19 @@ type SignedDetails struct {
 	jwt.RegisteredClaims
 }
 
-var SECRET_KEY string = os.Getenv("SECRET_KEY")
-var SECRET_FRESH_KEY string = os.Getenv("SECRET_FRESH_KEY")
-var userCollection mongo.Collection = *database.OpenCollection("users")
+func secretKey() ([]byte, error) {
+	secret := os.Getenv("SECRET_KEY")
+	if secret == "" {
+		return nil, errors.New("SECRET_KEY is not set")
+	}
+	return []byte(secret), nil
+}
 
 func GenerateAllTokens(email, firstName, lastname, role, userId string) (string, string, error) {
+	key, err := secretKey()
+	if err != nil {
+		return "", "", err
+	}
 	claims := &SignedDetails{
 		Email:     email,
 		FirstName: firstName,
@@ -48,7 +57,7 @@ func GenerateAllTokens(email, firstName, lastname, role, userId string) (string,
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signedToken, err := token.SignedString([]byte(SECRET_KEY))
+	signedToken, err := token.SignedString(key)
 
 	if err != nil {
 		return "", "", err // empty for token and empty for freshed token
@@ -68,7 +77,7 @@ func GenerateAllTokens(email, firstName, lastname, role, userId string) (string,
 		},
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	signedRefreshToken, err := refreshToken.SignedString([]byte(SECRET_KEY))
+	signedRefreshToken, err := refreshToken.SignedString(key)
 
 	if err != nil {
 		return "", "", err // empty for token and empty for freshed token
@@ -90,7 +99,7 @@ func UpdateAllTokens(userId, token, refreshToken string) (err error) {
 			"updateAt":     updateAt,
 		},
 	}
-	_, err = userCollection.UpdateOne(ctx, bson.M{"use_id": userId}, updateData)
+	_, err = database.OpenCollection("users").UpdateOne(ctx, bson.M{"user_id": userId}, updateData)
 
 	if err != nil {
 		return err
@@ -100,38 +109,33 @@ func UpdateAllTokens(userId, token, refreshToken string) (err error) {
 
 func GetAccessToken(c *gin.Context) (string, error) {
 	// reading the token from the header
-	authHeader := c.Request.Header.Get("Authorization")
-	if authHeader == "" {
-		return "", errors.New("Authorization header is required !")
+	authHeader := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	parts := strings.Fields(authHeader)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return "", errors.New("Authorization header must use Bearer scheme")
 	}
-	// split the Bearer substr and get a pure jwt token string
-	tokenString := authHeader[len("Bearer "):]
-	if tokenString == "" {
-		return "", errors.New("Bearer token is required !")
-	}
-
-	return tokenString, nil
+	return parts[1], nil
 
 }
 
 func ValidateToken(tokenString string) (*SignedDetails, error) {
 	claims := &SignedDetails{}
-
-	// parse a token string into a token object
-	// and decode the string into a claims variable
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		return []byte(SECRET_KEY), nil
-	})
+	key, err := secretKey()
 	if err != nil {
 		return nil, err
 	}
-	// check if the signature userd HMAC algorithm  ,dismatch return error
-	if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, fmt.Errorf("unexpected signing algorithm: %s", token.Method.Alg())
+		}
+		return key, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithIssuer("MagicStream"))
+	if err != nil {
 		return nil, err
 	}
-	// if is expired return the error  has expired
-	if claims.ExpiresAt.Time.Before(time.Now()) {
-		return nil, errors.New("token has expired")
+	if !token.Valid {
+		return nil, errors.New("invalid token")
 	}
 
 	return claims, nil

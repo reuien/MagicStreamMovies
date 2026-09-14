@@ -1,9 +1,11 @@
 package database
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -11,41 +13,42 @@ import (
 )
 
 var Client *mongo.Client
-func Connect() *mongo.Client {
+var DatabaseName string
+
+func Connect() (*mongo.Client, error) {
 	err := godotenv.Load(".env")
 	if err != nil {
 		log.Println("Warning unable to find .env file")
 	}
 
-	MongoDB := os.Getenv("MONGODB_URI")
-	if MongoDB == "" {
-		log.Fatal("MONGODB_URI not set !")
+	mongoDBURI := os.Getenv("MONGODB_URI")
+	if mongoDBURI == "" {
+		return nil, fmt.Errorf("MONGODB_URI is not set")
 	}
-	fmt.Println("MongoDB URI : ", MongoDB)
+	DatabaseName = os.Getenv("DATABASE_NAME")
+	if DatabaseName == "" {
+		return nil, fmt.Errorf("DATABASE_NAME is not set")
+	}
 
-	clientOptions := options.Client().ApplyURI(MongoDB)
-	// connect to our database
+	clientOptions := options.Client().ApplyURI(mongoDBURI)
 	client, err := mongo.Connect(clientOptions)
 	if err != nil {
-		log.Fatal("fucking mongoDB connection failed")
+		return nil, fmt.Errorf("connect to MongoDB: %w", err)
 	}
-	return client
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx, nil); err != nil {
+		_ = client.Disconnect(context.Background())
+		return nil, fmt.Errorf("ping MongoDB: %w", err)
+	}
+
+	Client = client
+	return client, nil
 }
 
-
-
 func OpenCollection(collectionName string) *mongo.Collection {
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Println("Warning unable to find .env file! ")
+	if Client == nil {
+		panic("database client is not initialized")
 	}
-	databaseName := os.Getenv("DATABASE_NAME")
-
-	fmt.Println("DATABASE_NAME :", databaseName)
-
-	collection := Client.Database(databaseName).Collection(collectionName)
-	if collection == nil {
-		return nil
-	}
-	return collection
+	return Client.Database(DatabaseName).Collection(collectionName)
 }
