@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -51,4 +52,22 @@ func OpenCollection(collectionName string) *mongo.Collection {
 		panic("database client is not initialized")
 	}
 	return Client.Database(DatabaseName).Collection(collectionName)
+}
+
+func EnsureIndexes(ctx context.Context) error {
+	indexes := []struct {
+		collection string
+		models     []mongo.IndexModel
+	}{
+		{collection: "users", models: []mongo.IndexModel{{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)}}},
+		{collection: "movies", models: []mongo.IndexModel{{Keys: bson.D{{Key: "imdb_id", Value: 1}}, Options: options.Index().SetUnique(true)}}},
+		{collection: "recommendation_feedback", models: []mongo.IndexModel{{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "imdb_id", Value: 1}}, Options: options.Index().SetUnique(true)}}},
+		{collection: "conversations", models: []mongo.IndexModel{{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}}},
+	}
+	for _, entry := range indexes {
+		if _, err := OpenCollection(entry.collection).Indexes().CreateMany(ctx, entry.models); err != nil {
+			return fmt.Errorf("create indexes for %s: %w", entry.collection, err)
+		}
+	}
+	return nil
 }

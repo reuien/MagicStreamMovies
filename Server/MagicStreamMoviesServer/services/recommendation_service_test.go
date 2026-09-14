@@ -36,7 +36,7 @@ func TestBuildMovieFilterEscapesKeywords(t *testing.T) {
 			bson.M{"admin_review": bson.M{"$regex": `星球\.\*`, "$options": "i"}},
 		}},
 	}}
-	if got := buildMovieFilter(preferences); !reflect.DeepEqual(got, want) {
+	if got := buildMovieFilter(preferences, nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildMovieFilter() = %#v, want %#v", got, want)
 	}
 }
@@ -53,5 +53,13 @@ func TestBuildRecommendationReason(t *testing.T) {
 	reason := BuildRecommendationReason(movie, preferences)
 	if reason != "匹配你想看的科幻类型，符合“轻松”的观影氛围" {
 		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestBuildMovieFilterExcludesDislikedMovies(t *testing.T) {
+	got := buildMovieFilter(models.MoviePreferences{}, []string{"tt-1", "tt-2"})
+	want := bson.M{"$and": bson.A{bson.M{"imdb_id": bson.M{"$nin": []string{"tt-1", "tt-2"}}}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildMovieFilter() = %#v, want %#v", got, want)
 	}
 }

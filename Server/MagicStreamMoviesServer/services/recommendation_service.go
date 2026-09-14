@@ -101,12 +101,16 @@ func normalizeTerms(values []string) []string {
 	return result
 }
 
-func (s *RecommendationService) Recommend(ctx context.Context, query string) (models.RecommendationResponse, error) {
+func (s *RecommendationService) Recommend(ctx context.Context, query string, history []string, excludedMovieIDs []string) (models.RecommendationResponse, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return models.RecommendationResponse{}, errors.New("recommendation query is empty")
 	}
-	raw, err := s.generator.Generate(ctx, preferencePrompt+query)
+	prompt := preferencePrompt + query
+	if len(history) > 0 {
+		prompt += "\nRecent conversation context: " + strings.Join(history, " | ")
+	}
+	raw, err := s.generator.Generate(ctx, prompt)
 	if err != nil {
 		return models.RecommendationResponse{}, fmt.Errorf("extract movie preferences: %w", err)
 	}
@@ -115,7 +119,7 @@ func (s *RecommendationService) Recommend(ctx context.Context, query string) (mo
 		return models.RecommendationResponse{}, err
 	}
 
-	filter := buildMovieFilter(preferences)
+	filter := buildMovieFilter(preferences, excludedMovieIDs)
 	findOptions := options.Find().SetSort(bson.D{{Key: "ranking.ranking_value", Value: -1}}).SetLimit(preferences.MaxResults)
 	cursor, err := s.movies.Find(ctx, filter, findOptions)
 	if err != nil {
@@ -138,13 +142,16 @@ func (s *RecommendationService) Recommend(ctx context.Context, query string) (mo
 	return models.RecommendationResponse{Query: query, Preferences: preferences, Recommendations: items}, nil
 }
 
-func buildMovieFilter(preferences models.MoviePreferences) bson.M {
+func buildMovieFilter(preferences models.MoviePreferences, excludedMovieIDs []string) bson.M {
 	conditions := bson.A{}
 	if len(preferences.Genres) > 0 {
 		conditions = append(conditions, bson.M{"genre.genre_name": bson.M{"$in": preferences.Genres}})
 	}
 	if len(preferences.ExcludedGenres) > 0 {
 		conditions = append(conditions, bson.M{"genre.genre_name": bson.M{"$nin": preferences.ExcludedGenres}})
+	}
+	if len(excludedMovieIDs) > 0 {
+		conditions = append(conditions, bson.M{"imdb_id": bson.M{"$nin": excludedMovieIDs}})
 	}
 	if len(preferences.Keywords) > 0 {
 		keywordConditions := bson.A{}

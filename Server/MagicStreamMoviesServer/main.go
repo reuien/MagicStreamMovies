@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/database"
@@ -26,6 +27,11 @@ func main() {
 			log.Printf("database disconnect failed: %v", err)
 		}
 	}()
+	indexContext, cancelIndexes := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelIndexes()
+	if err := database.EnsureIndexes(indexContext); err != nil {
+		log.Fatalf("database index initialization failed: %v", err)
+	}
 
 	routes.SetupUnprotectedRoutes(router)
 	routes.SetupProtectedRoutes(router, client)

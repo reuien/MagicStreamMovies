@@ -16,5 +16,8 @@ func SetupProtectedRoutes(router *gin.Engine, client *mongo.Client) {
 
 	router.GET("/recommendedmovies", controller.GetRecommendationMovies())
 	router.POST("/ai/recommend", controller.RecommendMoviesWithAI())
+	router.GET("/ai/conversations", controller.ListAIConversations())
+	router.GET("/ai/conversations/:conversation_id", controller.GetAIConversation())
+	router.PUT("/ai/feedback/:imdb_id", controller.SaveRecommendationFeedback())
 	router.PATCH("/updatereview/:imdb_id", controller.AdminReviewUpdate())
 }
