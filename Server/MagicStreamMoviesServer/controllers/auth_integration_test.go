@@ -130,6 +130,18 @@ func TestAuthMiddlewareAcceptsCurrentTokenAndRejectsRevokedTokenIntegration(t *t
 	}
 }
 
+func TestReadinessWithMongoDBIntegration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	integrationUsers(t)
+	router := gin.New()
+	router.GET("/ready", Readiness(database.Client))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("readiness status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestRefreshRotationAndLogoutIntegration(t *testing.T) {
 	t.Setenv("SECRET_KEY", "integration-secret")
 	gin.SetMode(gin.TestMode)

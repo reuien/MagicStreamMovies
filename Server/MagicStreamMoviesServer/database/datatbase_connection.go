@@ -3,11 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
 	"time"
 
-	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -16,20 +13,14 @@ import (
 var Client *mongo.Client
 var DatabaseName string
 
-func Connect() (*mongo.Client, error) {
-	err := godotenv.Load(".env")
-	if err != nil {
-		log.Println("Warning unable to find .env file")
-	}
-
-	mongoDBURI := os.Getenv("MONGODB_URI")
+func Connect(mongoDBURI, databaseName string) (*mongo.Client, error) {
 	if mongoDBURI == "" {
 		return nil, fmt.Errorf("MONGODB_URI is not set")
 	}
-	DatabaseName = os.Getenv("DATABASE_NAME")
-	if DatabaseName == "" {
+	if databaseName == "" {
 		return nil, fmt.Errorf("DATABASE_NAME is not set")
 	}
+	DatabaseName = databaseName
 
 	clientOptions := options.Client().ApplyURI(mongoDBURI)
 	client, err := mongo.Connect(clientOptions)

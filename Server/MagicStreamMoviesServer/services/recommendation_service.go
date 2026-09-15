@@ -34,15 +34,18 @@ type LangChainGenerator struct {
 }
 
 func NewLangChainGenerator() (*LangChainGenerator, error) {
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	return NewLangChainGeneratorWithConfig(os.Getenv("OPENAI_API_KEY"), os.Getenv("OPENAI_BASE_URL"), os.Getenv("OPENAI_MODEL"))
+}
+
+func NewLangChainGeneratorWithConfig(apiKey, baseURL, model string) (*LangChainGenerator, error) {
 	if apiKey == "" {
 		return nil, errors.New("OPENAI_API_KEY is not set")
 	}
 	opts := []openai.Option{openai.WithToken(apiKey)}
-	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
+	if baseURL != "" {
 		opts = append(opts, openai.WithBaseURL(baseURL))
 	}
-	if model := os.Getenv("OPENAI_MODEL"); model != "" {
+	if model != "" {
 		opts = append(opts, openai.WithModel(model))
 	}
 	llm, err := openai.New(opts...)

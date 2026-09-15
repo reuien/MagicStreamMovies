@@ -23,6 +23,14 @@ func conversationService() *services.ConversationService {
 
 func RecommendMoviesWithAI() gin.HandlerFunc {
 	generator, generatorErr := services.NewLangChainGenerator()
+	return recommendMoviesWithAI(generator, generatorErr, 30*time.Second)
+}
+
+func RecommendMoviesWithAIConfigured(generator services.TextGenerator, generatorErr error, timeout time.Duration) gin.HandlerFunc {
+	return recommendMoviesWithAI(generator, generatorErr, timeout)
+}
+
+func recommendMoviesWithAI(generator services.TextGenerator, generatorErr error, timeout time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if generatorErr != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI recommendation service is not configured"})
@@ -38,7 +46,7 @@ func RecommendMoviesWithAI() gin.HandlerFunc {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "user identity is unavailable"})
 			return
 		}
-		ctx, cancel := requestContext(c, 30*time.Second)
+		ctx, cancel := requestContext(c, timeout)
 		defer cancel()
 		conversations := conversationService()
 		history, err := conversations.Context(ctx, userID, request.ConversationID)

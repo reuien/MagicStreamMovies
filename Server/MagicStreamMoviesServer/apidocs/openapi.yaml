@@ -1,0 +1,250 @@
+openapi: 3.0.3
+info:
+  title: Magic Stream Movies API
+  version: 1.0.0
+  description: Movie discovery, administration and AI recommendation backend.
+servers:
+  - url: http://localhost:8080
+tags:
+  - {name: System}
+  - {name: Authentication}
+  - {name: Movies}
+  - {name: AI}
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness probe
+      responses:
+        '200': {description: Process is alive}
+  /ready:
+    get:
+      tags: [System]
+      summary: MongoDB readiness probe
+      responses:
+        '200': {description: Service is ready}
+        '503': {description: MongoDB is unavailable}
+  /register:
+    post:
+      tags: [Authentication]
+      summary: Register a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RegisterRequest'}
+      responses:
+        '201': {description: User created}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {description: Email already exists}
+  /login:
+    post:
+      tags: [Authentication]
+      summary: Log in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200':
+          description: Access and refresh tokens
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate an active refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string}
+      responses:
+        '200':
+          description: Rotated token pair
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TokenPair'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /logout:
+    post:
+      tags: [Authentication]
+      security: [{bearerAuth: []}]
+      summary: Revoke the current token pair
+      responses:
+        '204': {description: Logged out}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /movies:
+    get:
+      tags: [Movies]
+      summary: Search and paginate movies
+      parameters:
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: page_size, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {in: query, name: q, schema: {type: string}}
+        - {in: query, name: genre, schema: {type: string}}
+        - {in: query, name: sort_by, schema: {type: string, enum: [title, ranking]}}
+        - {in: query, name: order, schema: {type: string, enum: [asc, desc]}}
+      responses:
+        '200': {description: Paginated movie list}
+  /movie/{imdb_id}:
+    get:
+      tags: [Movies]
+      security: [{bearerAuth: []}]
+      summary: Get one movie
+      parameters: [{$ref: '#/components/parameters/ImdbID'}]
+      responses:
+        '200': {description: Movie details}
+        '404': {description: Movie not found}
+  /addmovie:
+    post:
+      tags: [Movies]
+      security: [{bearerAuth: []}]
+      summary: Add a movie (administrator)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Movie'}
+      responses:
+        '201': {description: Movie created}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /movies/{imdb_id}:
+    patch:
+      tags: [Movies]
+      security: [{bearerAuth: []}]
+      summary: Update a movie (administrator)
+      parameters: [{$ref: '#/components/parameters/ImdbID'}]
+      responses:
+        '200': {description: Movie updated}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    delete:
+      tags: [Movies]
+      security: [{bearerAuth: []}]
+      summary: Delete a movie (administrator)
+      parameters: [{$ref: '#/components/parameters/ImdbID'}]
+      responses:
+        '204': {description: Movie deleted}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /ai/recommend:
+    post:
+      tags: [AI]
+      security: [{bearerAuth: []}]
+      summary: Recommend movies from a natural-language request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: {type: string, minLength: 2, maxLength: 1000}
+                conversation_id: {type: string}
+      responses:
+        '200': {description: Structured recommendations and conversation ID}
+        '422': {description: AI output could not be validated}
+        '503': {description: AI provider unavailable}
+  /ai/conversations:
+    get:
+      tags: [AI]
+      security: [{bearerAuth: []}]
+      summary: List the current user's conversations
+      responses:
+        '200': {description: Conversation list}
+  /ai/conversations/{conversation_id}:
+    get:
+      tags: [AI]
+      security: [{bearerAuth: []}]
+      summary: Get one owned conversation
+      parameters:
+        - {in: path, name: conversation_id, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Conversation details}
+        '404': {description: Conversation not found}
+  /ai/feedback/{imdb_id}:
+    put:
+      tags: [AI]
+      security: [{bearerAuth: []}]
+      summary: Upsert recommendation feedback
+      parameters: [{$ref: '#/components/parameters/ImdbID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: {type: string, enum: [like, dislike]}
+      responses:
+        '200': {description: Feedback saved}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    ImdbID: {in: path, name: imdb_id, required: true, schema: {type: string}}
+  responses:
+    BadRequest:
+      description: Invalid request
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Unauthorized:
+      description: Authentication required
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Forbidden:
+      description: Administrator role required
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  schemas:
+    Error:
+      type: object
+      properties: {error: {type: string}}
+    Genre:
+      type: object
+      required: [genre_id, genre_name]
+      properties: {genre_id: {type: integer}, genre_name: {type: string}}
+    RegisterRequest:
+      type: object
+      required: [first_name, last_name, email, password, favourite_genres]
+      properties:
+        first_name: {type: string, minLength: 2, maxLength: 100}
+        last_name: {type: string, minLength: 2, maxLength: 100}
+        email: {type: string, format: email}
+        password: {type: string, format: password, minLength: 8, maxLength: 128}
+        favourite_genres: {type: array, items: {$ref: '#/components/schemas/Genre'}}
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, format: password, minLength: 8, maxLength: 128}
+    TokenPair:
+      type: object
+      properties: {token: {type: string}, refresh_token: {type: string}}
+    AuthResponse:
+      allOf:
+        - {$ref: '#/components/schemas/TokenPair'}
+        - type: object
+          properties:
+            user_id: {type: string}
+            first_name: {type: string}
+            last_name: {type: string}
+            email: {type: string}
+            role: {type: string, enum: [USER, ADMIN]}
+    Movie:
+      type: object
+      required: [imdb_id, title, poster_path, youtube_id, genre, ranking]
+      properties:
+        imdb_id: {type: string}
+        title: {type: string}
+        poster_path: {type: string, format: uri}
+        youtube_id: {type: string}
+        genre: {type: array, items: {$ref: '#/components/schemas/Genre'}}
+        admin_review: {type: string}
+        ranking: {type: object}
