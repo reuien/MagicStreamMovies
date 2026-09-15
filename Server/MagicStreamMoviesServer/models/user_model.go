@@ -12,7 +12,7 @@ type User struct {
 	FirstName       string        `json:"first_name" bson:"first_name" validate:"required,min=2,max=100"`
 	LastName        string        `json:"last_name" bson:"last_name" validate:"required,min=2,max=100"`
 	Email           string        `json:"email" bson:"email" validate:"required,email"`
-	Password        string        `json:"password" bson:"password" validate:"required,min=6"`
+	Password        string        `json:"password" bson:"password" validate:"required,min=8,max=128"`
 	Role            string        `json:"role" bson:"role" validate:"oneof=ADMIN USER"`
 	CreatedAt       time.Time     `json:"created_at" bson:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at" bson:"updated_at"`
@@ -22,8 +22,8 @@ type User struct {
 }
 
 type UserLogin struct {
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required,min=6"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=8,max=128"`
 }
 
 type RefreshTokenRequest struct {

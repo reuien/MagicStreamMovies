@@ -43,8 +43,9 @@ func RegisterUser() gin.HandlerFunc {
 		hashedPassword, err := HashPassword(user.Password)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to hash password !"})
+			return
 		}
-		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 
 		count, err := userStore().CountDocuments(ctx, bson.M{"email": user.Email})

@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/database"
+	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/middleware"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/models"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/utils"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -48,6 +49,85 @@ func integrationUsers(t *testing.T) *mongo.Collection {
 		database.Client, database.DatabaseName = oldClient, oldName
 	})
 	return database.OpenCollection("users")
+}
+
+func TestRegisterForcesUserRoleAndLoginValidatesInputIntegration(t *testing.T) {
+	t.Setenv("SECRET_KEY", "integration-secret")
+	gin.SetMode(gin.TestMode)
+	users := integrationUsers(t)
+	router := gin.New()
+	router.POST("/register", RegisterUser())
+	router.POST("/login", LoginUser())
+
+	register := httptest.NewRecorder()
+	registerBody := `{"first_name":"Test","last_name":"User","email":"new@example.com","password":"secure-pass","role":"ADMIN","favourite_genres":[{"genre_id":1,"genre_name":"Drama"}]}`
+	registerRequest := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(registerBody))
+	registerRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(register, registerRequest)
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register status = %d, body = %s", register.Code, register.Body.String())
+	}
+	var stored models.User
+	if err := users.FindOne(context.Background(), bson.M{"email": "new@example.com"}).Decode(&stored); err != nil {
+		t.Fatalf("find registered user: %v", err)
+	}
+	if stored.Role != "USER" {
+		t.Fatalf("registered role = %q, want USER", stored.Role)
+	}
+	if stored.Password == "secure-pass" {
+		t.Fatal("password was stored in plaintext")
+	}
+
+	invalid := httptest.NewRecorder()
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(`{"email":"not-an-email","password":"short"}`))
+	invalidRequest.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(invalid, invalidRequest)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid login status = %d, want %d", invalid.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAuthMiddlewareAcceptsCurrentTokenAndRejectsRevokedTokenIntegration(t *testing.T) {
+	t.Setenv("SECRET_KEY", "integration-secret")
+	gin.SetMode(gin.TestMode)
+	users := integrationUsers(t)
+	access, refresh, err := utils.GenerateAllTokens("guarded@example.com", "Guarded", "User", "USER", "guarded-1")
+	if err != nil {
+		t.Fatalf("GenerateAllTokens() error = %v", err)
+	}
+	if _, err := users.InsertOne(context.Background(), models.User{UserID: "guarded-1", Email: "guarded@example.com", Role: "USER", Token: access, RefreshToken: refresh}); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	router := gin.New()
+	router.Use(middleware.AuthMiddleWare())
+	router.GET("/protected", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+	valid := httptest.NewRecorder()
+	validRequest := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	validRequest.Header.Set("Authorization", "Bearer "+access)
+	router.ServeHTTP(valid, validRequest)
+	if valid.Code != http.StatusNoContent {
+		t.Fatalf("valid token status = %d, body = %s", valid.Code, valid.Body.String())
+	}
+
+	if _, err := users.UpdateOne(context.Background(), bson.M{"user_id": "guarded-1"}, bson.M{"$unset": bson.M{"token": ""}}); err != nil {
+		t.Fatalf("revoke token: %v", err)
+	}
+	revoked := httptest.NewRecorder()
+	revokedRequest := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	revokedRequest.Header.Set("Authorization", "Bearer "+access)
+	router.ServeHTTP(revoked, revokedRequest)
+	if revoked.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token status = %d, want %d", revoked.Code, http.StatusUnauthorized)
+	}
+
+	refreshAttempt := httptest.NewRecorder()
+	refreshRequest := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	refreshRequest.Header.Set("Authorization", "Bearer "+refresh)
+	router.ServeHTTP(refreshAttempt, refreshRequest)
+	if refreshAttempt.Code != http.StatusUnauthorized {
+		t.Fatalf("refresh token as access status = %d, want %d", refreshAttempt.Code, http.StatusUnauthorized)
+	}
 }
 
 func TestRefreshRotationAndLogoutIntegration(t *testing.T) {
