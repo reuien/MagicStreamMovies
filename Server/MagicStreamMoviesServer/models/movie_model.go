@@ -22,3 +22,12 @@ type Movie struct {
 	AdminReview string        `bson:"admin_review" json:"admin_review"`
 	Ranking     Ranking       `bson:"ranking" json:"ranking" validate:"required"`
 }
+
+type MovieUpdateRequest struct {
+	Title       *string  `json:"title" validate:"omitempty,min=2,max=500"`
+	PosterPath  *string  `json:"poster_path" validate:"omitempty,url"`
+	YoutubeID   *string  `json:"youtube_id" validate:"omitempty,min=1"`
+	Genre       *[]Genre `json:"genre" validate:"omitempty,min=1,dive"`
+	AdminReview *string  `json:"admin_review" validate:"omitempty,max=5000"`
+	Ranking     *Ranking `json:"ranking" validate:"omitempty"`
+}

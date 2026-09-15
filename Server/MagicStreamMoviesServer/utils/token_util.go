@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/database"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -23,11 +24,12 @@ first we'll generate token and refresh token remember this two kind of thing can
 and a function to handle the update token
 */
 type SignedDetails struct {
-	Email     string
-	FirstName string
-	LastName  string
-	Role      string
-	UserId    string
+	Email     string `json:"email"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Role      string `json:"role"`
+	UserId    string `json:"user_id"`
+	TokenType string `json:"token_type"`
 	jwt.RegisteredClaims
 }
 
@@ -44,67 +46,59 @@ func GenerateAllTokens(email, firstName, lastname, role, userId string) (string,
 	if err != nil {
 		return "", "", err
 	}
-	claims := &SignedDetails{
-		Email:     email,
-		FirstName: firstName,
-		LastName:  lastname,
-		Role:      role,
-		UserId:    userId,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "MagicStream",
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 7 * time.Hour)),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signedToken, err := token.SignedString(key)
-
+	now := time.Now().UTC()
+	signedToken, err := signToken(key, email, firstName, lastname, role, userId, "access", now, now.Add(15*time.Minute))
 	if err != nil {
-		return "", "", err // empty for token and empty for freshed token
+		return "", "", err
 	}
-	// duplicating above
-
-	refreshClaims := &SignedDetails{
-		Email:     email,
-		FirstName: firstName,
-		LastName:  lastname,
-		Role:      role,
-		UserId:    userId,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "MagicStream",
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-		},
-	}
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	signedRefreshToken, err := refreshToken.SignedString(key)
-
+	signedRefreshToken, err := signToken(key, email, firstName, lastname, role, userId, "refresh", now, now.Add(7*24*time.Hour))
 	if err != nil {
-		return "", "", err // empty for token and empty for freshed token
+		return "", "", err
 	}
-
 	return signedToken, signedRefreshToken, nil
 }
 
-func UpdateAllTokens(userId, token, refreshToken string) (err error) {
-	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*100)
-	defer cancel()
-
-	updateAt, _ := time.Parse(time.RFC3339, time.Now().Format(time.RFC3339))
-
-	updateData := bson.M{
-		"$set": bson.M{
-			"token":        token,
-			"refreshToken": refreshToken,
-			"updateAt":     updateAt,
+func signToken(key []byte, email, firstName, lastName, role, userID, tokenType string, issuedAt, expiresAt time.Time) (string, error) {
+	claims := &SignedDetails{
+		Email:     email,
+		FirstName: firstName,
+		LastName:  lastName,
+		Role:      role,
+		UserId:    userID,
+		TokenType: tokenType,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "MagicStream",
+			Subject:   userID,
+			ID:        uuid.NewString(),
+			IssuedAt:  jwt.NewNumericDate(issuedAt),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
 	}
-	_, err = database.OpenCollection("users").UpdateOne(ctx, bson.M{"user_id": userId}, updateData)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(key)
+}
 
-	if err != nil {
-		return err
+func UpdateAllTokens(ctx context.Context, userId, token, refreshToken string) error {
+	updateData := bson.M{
+		"$set": bson.M{
+			"token":         token,
+			"refresh_token": refreshToken,
+			"updated_at":    time.Now().UTC(),
+		},
 	}
-	return nil
+	_, err := database.OpenCollection("users").UpdateOne(ctx, bson.M{"user_id": userId}, updateData)
+	return err
+}
+
+func RotateTokens(ctx context.Context, userID, currentRefreshToken, accessToken, refreshToken string) (bool, error) {
+	result, err := database.OpenCollection("users").UpdateOne(ctx, bson.M{
+		"user_id": userID, "refresh_token": currentRefreshToken,
+	}, bson.M{"$set": bson.M{
+		"token": accessToken, "refresh_token": refreshToken, "updated_at": time.Now().UTC(),
+	}})
+	if err != nil {
+		return false, err
+	}
+	return result.ModifiedCount == 1, nil
 }
 
 func GetAccessToken(c *gin.Context) (string, error) {
@@ -119,6 +113,14 @@ func GetAccessToken(c *gin.Context) (string, error) {
 }
 
 func ValidateToken(tokenString string) (*SignedDetails, error) {
+	return validateTokenType(tokenString, "access")
+}
+
+func ValidateRefreshToken(tokenString string) (*SignedDetails, error) {
+	return validateTokenType(tokenString, "refresh")
+}
+
+func validateTokenType(tokenString, expectedType string) (*SignedDetails, error) {
 	claims := &SignedDetails{}
 	key, err := secretKey()
 	if err != nil {
@@ -136,6 +138,9 @@ func ValidateToken(tokenString string) (*SignedDetails, error) {
 	}
 	if !token.Valid {
 		return nil, errors.New("invalid token")
+	}
+	if claims.TokenType != expectedType {
+		return nil, fmt.Errorf("expected %s token", expectedType)
 	}
 
 	return claims, nil

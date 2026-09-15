@@ -13,6 +13,9 @@ func SetupProtectedRoutes(router *gin.Engine, client *mongo.Client) {
 	// if the token is invalid so the code won't continuously execute
 	router.GET("/movie/:imdb_id", controller.GetMovie())
 	router.POST("/addmovie", controller.AddMovie())
+	router.POST("/logout", controller.LogoutUser())
+	router.PATCH("/movies/:imdb_id", controller.UpdateMovie())
+	router.DELETE("/movies/:imdb_id", controller.DeleteMovie())
 
 	router.GET("/recommendedmovies", controller.GetRecommendationMovies())
 	router.POST("/ai/recommend", controller.RecommendMoviesWithAI())

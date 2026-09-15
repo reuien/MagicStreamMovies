@@ -34,6 +34,7 @@ func RegisterUser() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input data!"})
 			return
 		}
+		user.Role = "USER"
 		validate := validator.New()
 		if err := validate.Struct(user); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed!", "details": err.Error()})
@@ -75,7 +76,7 @@ func LoginUser() gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input data!"})
 			return
 		}
-		var ctx, cancel = context.WithTimeout(context.Background(), time.Second*100)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancel()
 		var foundUser models.User
 
@@ -96,7 +97,7 @@ func LoginUser() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate tokens!"})
 			return
 		}
-		err = utils.UpdateAllTokens(foundUser.UserID, token, refreshToken)
+		err = utils.UpdateAllTokens(ctx, foundUser.UserID, token, refreshToken)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update token!"})
 			return
@@ -112,5 +113,67 @@ func LoginUser() gin.HandlerFunc {
 			FavouriteGenres: foundUser.FavouriteGenres,
 		})
 
+	}
+}
+
+func RefreshTokens() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request models.RefreshTokenRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refresh_token is required"})
+			return
+		}
+		claims, err := utils.ValidateRefreshToken(request.RefreshToken)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid refresh token"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		var user models.User
+		if err := userStore().FindOne(ctx, bson.M{"user_id": claims.UserId, "refresh_token": request.RefreshToken}).Decode(&user); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh token is expired or revoked"})
+			return
+		}
+		accessToken, refreshToken, err := utils.GenerateAllTokens(user.Email, user.FirstName, user.LastName, user.Role, user.UserID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rotate tokens"})
+			return
+		}
+		rotated, err := utils.RotateTokens(ctx, user.UserID, request.RefreshToken, accessToken, refreshToken)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist rotated tokens"})
+			return
+		}
+		if !rotated {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh token was already used"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"token": accessToken, "refresh_token": refreshToken})
+	}
+}
+
+func LogoutUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := utils.GetUserIdFromContext(c)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user identity is unavailable"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		result, err := userStore().UpdateOne(ctx, bson.M{"user_id": userID}, bson.M{
+			"$unset": bson.M{"token": "", "refresh_token": ""},
+			"$set":   bson.M{"updated_at": time.Now().UTC()},
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to log out"})
+			return
+		}
+		if result.MatchedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.Status(http.StatusNoContent)
 	}
 }

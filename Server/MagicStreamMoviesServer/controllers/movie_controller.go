@@ -14,8 +14,10 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,21 +35,94 @@ var validate = validator.New()
 
 func GetMovies() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
-		defer cancel()
-
-		var movies []models.Movie
-
-		curcor, err := movieStore().Find(ctx, bson.M{})
+		query, err := parseMovieQuery(c)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch movies like that !"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
 		}
-		defer curcor.Close(ctx)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		filter := movieQueryFilter(query)
+		total, err := movieStore().CountDocuments(ctx, filter)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count movies"})
+			return
+		}
+		findOptions := options.Find().SetSkip(int64((query.Page - 1) * query.PageSize)).SetLimit(int64(query.PageSize)).SetSort(movieQuerySort(query.Sort))
+		var movies []models.Movie
+		cursor, err := movieStore().Find(ctx, filter, findOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch movies"})
+			return
+		}
+		defer cursor.Close(ctx)
+		if err := cursor.All(ctx, &movies); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decode movies"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"items": movies, "page": query.Page, "page_size": query.PageSize,
+			"total": total, "total_pages": int(math.Ceil(float64(total) / float64(query.PageSize))),
+		})
+	}
+}
 
-		if err := curcor.All(ctx, &movies); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error ": "failed to decoded movies"})
+type movieQuery struct {
+	Page     int
+	PageSize int
+	Search   string
+	Genre    string
+	Sort     string
+}
+
+func parseMovieQuery(c *gin.Context) (movieQuery, error) {
+	query := movieQuery{Page: 1, PageSize: 20, Sort: "ranking_desc"}
+	var err error
+	if value := c.Query("page"); value != "" {
+		query.Page, err = strconv.Atoi(value)
+		if err != nil || query.Page < 1 {
+			return query, errors.New("page must be a positive integer")
 		}
-		c.JSON(http.StatusOK, movies)
+	}
+	if value := c.Query("page_size"); value != "" {
+		query.PageSize, err = strconv.Atoi(value)
+		if err != nil || query.PageSize < 1 || query.PageSize > 100 {
+			return query, errors.New("page_size must be between 1 and 100")
+		}
+	}
+	query.Search = strings.TrimSpace(c.Query("search"))
+	query.Genre = strings.TrimSpace(c.Query("genre"))
+	if len([]rune(query.Search)) > 100 || len([]rune(query.Genre)) > 50 {
+		return query, errors.New("search or genre is too long")
+	}
+	if value := c.Query("sort"); value != "" {
+		query.Sort = value
+	}
+	if _, ok := map[string]bool{"ranking_desc": true, "title_asc": true, "title_desc": true}[query.Sort]; !ok {
+		return query, errors.New("unsupported sort value")
+	}
+	return query, nil
+}
+
+func movieQueryFilter(query movieQuery) bson.M {
+	filter := bson.M{}
+	if query.Search != "" {
+		filter["title"] = bson.M{"$regex": regexp.QuoteMeta(query.Search), "$options": "i"}
+	}
+	if query.Genre != "" {
+		filter["genre.genre_name"] = bson.M{"$regex": "^" + regexp.QuoteMeta(query.Genre) + "$", "$options": "i"}
+	}
+	return filter
+}
+
+func movieQuerySort(value string) bson.D {
+	switch value {
+	case "title_asc":
+		return bson.D{{Key: "title", Value: 1}}
+	case "title_desc":
+		return bson.D{{Key: "title", Value: -1}}
+	default:
+		return bson.D{{Key: "ranking.ranking_value", Value: -1}, {Key: "title", Value: 1}}
 	}
 }
 
@@ -74,6 +149,9 @@ func GetMovie() gin.HandlerFunc {
 
 func AddMovie() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !requireAdmin(c) {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 		defer cancel()
 
@@ -93,6 +171,96 @@ func AddMovie() gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, result)
 	}
+}
+
+func UpdateMovie() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !requireAdmin(c) {
+			return
+		}
+		var request models.MovieUpdateRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid movie update"})
+			return
+		}
+		if err := validate.Struct(request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "movie validation failed"})
+			return
+		}
+		update := movieUpdateDocument(request)
+		if len(update) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "at least one field is required"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		result, err := movieStore().UpdateOne(ctx, bson.M{"imdb_id": c.Param("imdb_id")}, bson.M{"$set": update})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update movie"})
+			return
+		}
+		if result.MatchedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "movie not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "updated"})
+	}
+}
+
+func DeleteMovie() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !requireAdmin(c) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		result, err := movieStore().DeleteOne(ctx, bson.M{"imdb_id": c.Param("imdb_id")})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete movie"})
+			return
+		}
+		if result.DeletedCount == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "movie not found"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func requireAdmin(c *gin.Context) bool {
+	role, err := utils.GetRoleFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user role is unavailable"})
+		return false
+	}
+	if role != "ADMIN" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "administrator role is required"})
+		return false
+	}
+	return true
+}
+
+func movieUpdateDocument(request models.MovieUpdateRequest) bson.M {
+	update := bson.M{}
+	if request.Title != nil {
+		update["title"] = *request.Title
+	}
+	if request.PosterPath != nil {
+		update["poster_path"] = *request.PosterPath
+	}
+	if request.YoutubeID != nil {
+		update["youtube_id"] = *request.YoutubeID
+	}
+	if request.Genre != nil {
+		update["genre"] = *request.Genre
+	}
+	if request.AdminReview != nil {
+		update["admin_review"] = *request.AdminReview
+	}
+	if request.Ranking != nil {
+		update["ranking"] = *request.Ranking
+	}
+	return update
 }
 
 // update review for particular movie

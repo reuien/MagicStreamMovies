@@ -115,9 +115,14 @@ func (s *ConversationService) Get(ctx context.Context, userID, conversationID st
 }
 
 func (s *ConversationService) SaveFeedback(ctx context.Context, userID, imdbID, feedbackType string) error {
-	_, err := s.feedback.UpdateOne(ctx, bson.M{"user_id": userID, "imdb_id": imdbID}, bson.M{"$set": bson.M{
+	filter := bson.M{"user_id": userID, "imdb_id": imdbID}
+	update := bson.M{"$set": bson.M{
 		"type": feedbackType, "updated_at": time.Now().UTC(),
-	}}, options.UpdateOne().SetUpsert(true))
+	}}
+	_, err := s.feedback.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true))
+	if mongo.IsDuplicateKeyError(err) {
+		_, err = s.feedback.UpdateOne(ctx, filter, update)
+	}
 	return err
 }
 

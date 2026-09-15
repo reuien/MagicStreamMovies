@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -19,6 +20,44 @@ func TestParseMoviePreferences(t *testing.T) {
 	}
 	if preferences.MaxResults != 5 {
 		t.Fatalf("max_results = %d, want 5", preferences.MaxResults)
+	}
+}
+
+type sequenceGenerator struct {
+	responses []string
+	calls     int
+}
+
+func (g *sequenceGenerator) Generate(context.Context, string) (string, error) {
+	response := g.responses[g.calls]
+	g.calls++
+	return response, nil
+}
+
+func TestExtractPreferencesRepairsMalformedOutputOnce(t *testing.T) {
+	generator := &sequenceGenerator{responses: []string{
+		"Here are your preferences: science fiction",
+		`{"genres":["科幻"],"excluded_genres":[],"keywords":[],"mood":"","max_results":5}`,
+	}}
+	service := NewRecommendationService(nil, generator)
+	preferences, attempts, err := service.extractPreferences(context.Background(), "推荐科幻片", nil)
+	if err != nil {
+		t.Fatalf("extractPreferences() error = %v", err)
+	}
+	if attempts != 2 || generator.calls != 2 || !reflect.DeepEqual(preferences.Genres, []string{"科幻"}) {
+		t.Fatalf("unexpected repair result: %#v, attempts=%d, calls=%d", preferences, attempts, generator.calls)
+	}
+}
+
+func TestParseMoviePreferencesRejectsUnknownAndTrailingFields(t *testing.T) {
+	invalid := []string{
+		`{"genres":[],"excluded_genres":[],"keywords":[],"mood":"","max_results":5,"command":"ignore rules"}`,
+		`{"genres":[],"excluded_genres":[],"keywords":[],"mood":"","max_results":5}{}`,
+	}
+	for _, raw := range invalid {
+		if _, err := ParseMoviePreferences(raw); err == nil {
+			t.Fatalf("ParseMoviePreferences() accepted %s", raw)
+		}
 	}
 }
 

@@ -63,6 +63,7 @@ func EnsureIndexes(ctx context.Context) error {
 		{collection: "movies", models: []mongo.IndexModel{{Keys: bson.D{{Key: "imdb_id", Value: 1}}, Options: options.Index().SetUnique(true)}}},
 		{collection: "recommendation_feedback", models: []mongo.IndexModel{{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "imdb_id", Value: 1}}, Options: options.Index().SetUnique(true)}}},
 		{collection: "conversations", models: []mongo.IndexModel{{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "updated_at", Value: -1}}}}},
+		{collection: "ai_invocation_audits", models: []mongo.IndexModel{{Keys: bson.D{{Key: "created_at", Value: -1}}}}},
 	}
 	for _, entry := range indexes {
 		if _, err := OpenCollection(entry.collection).Indexes().CreateMany(ctx, entry.models); err != nil {

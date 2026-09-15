@@ -3,6 +3,7 @@ package utils
 import (
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	jwt "github.com/golang-jwt/jwt/v5"
@@ -21,6 +22,43 @@ func TestGenerateAndValidateToken(t *testing.T) {
 	}
 	if claims.UserId != "user-1" {
 		t.Fatalf("ValidateToken() UserId = %q, want %q", claims.UserId, "user-1")
+	}
+}
+
+func TestAccessAndRefreshTokensHaveCorrectTypesAndLifetimes(t *testing.T) {
+	t.Setenv("SECRET_KEY", "test-secret")
+	access, refresh, err := GenerateAllTokens("user@example.com", "Test", "User", "USER", "user-1")
+	if err != nil {
+		t.Fatalf("GenerateAllTokens() error = %v", err)
+	}
+	accessClaims, err := ValidateToken(access)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+	refreshClaims, err := ValidateRefreshToken(refresh)
+	if err != nil {
+		t.Fatalf("ValidateRefreshToken() error = %v", err)
+	}
+	if accessClaims.TokenType != "access" || refreshClaims.TokenType != "refresh" {
+		t.Fatalf("unexpected token types: %q, %q", accessClaims.TokenType, refreshClaims.TokenType)
+	}
+	if accessClaims.ExpiresAt.Time.Sub(accessClaims.IssuedAt.Time) > 16*time.Minute {
+		t.Fatal("access token lifetime is too long")
+	}
+	if refreshClaims.ExpiresAt.Time.Sub(refreshClaims.IssuedAt.Time) < 6*24*time.Hour {
+		t.Fatal("refresh token lifetime is too short")
+	}
+	if _, err := ValidateToken(refresh); err == nil {
+		t.Fatal("ValidateToken() accepted a refresh token")
+	}
+}
+
+func TestGenerateAllTokensRotatesTokenIDs(t *testing.T) {
+	t.Setenv("SECRET_KEY", "test-secret")
+	accessOne, refreshOne, _ := GenerateAllTokens("user@example.com", "Test", "User", "USER", "user-1")
+	accessTwo, refreshTwo, _ := GenerateAllTokens("user@example.com", "Test", "User", "USER", "user-1")
+	if accessOne == accessTwo || refreshOne == refreshTwo {
+		t.Fatal("GenerateAllTokens() reused token identifiers")
 	}
 }
 

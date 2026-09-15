@@ -59,3 +59,15 @@ type RecommendationFeedback struct {
 	Type      string        `bson:"type" json:"type"`
 	UpdatedAt time.Time     `bson:"updated_at" json:"updated_at"`
 }
+
+type AIInvocationAudit struct {
+	ID         bson.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID     string        `bson:"user_id" json:"user_id"`
+	QueryHash  string        `bson:"query_hash" json:"query_hash"`
+	Model      string        `bson:"model" json:"model"`
+	Status     string        `bson:"status" json:"status"`
+	Attempts   int           `bson:"attempts" json:"attempts"`
+	DurationMS int64         `bson:"duration_ms" json:"duration_ms"`
+	ErrorCode  string        `bson:"error_code,omitempty" json:"error_code,omitempty"`
+	CreatedAt  time.Time     `bson:"created_at" json:"created_at"`
+}

@@ -2,12 +2,15 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/reuien/MagicStreamMovies/Server/MagicStreamMoviesServer/models"
 	"github.com/tmc/langchaingo/llms/openai"
@@ -55,11 +58,16 @@ func (g *LangChainGenerator) Generate(ctx context.Context, prompt string) (strin
 
 type RecommendationService struct {
 	movies    *mongo.Collection
+	audits    *mongo.Collection
 	generator TextGenerator
 }
 
-func NewRecommendationService(movies *mongo.Collection, generator TextGenerator) *RecommendationService {
-	return &RecommendationService{movies: movies, generator: generator}
+func NewRecommendationService(movies *mongo.Collection, generator TextGenerator, audits ...*mongo.Collection) *RecommendationService {
+	service := &RecommendationService{movies: movies, generator: generator}
+	if len(audits) > 0 {
+		service.audits = audits[0]
+	}
+	return service
 }
 
 func ParseMoviePreferences(raw string) (models.MoviePreferences, error) {
@@ -70,8 +78,13 @@ func ParseMoviePreferences(raw string) (models.MoviePreferences, error) {
 	cleaned = strings.TrimSpace(cleaned)
 
 	var preferences models.MoviePreferences
-	if err := json.Unmarshal([]byte(cleaned), &preferences); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(cleaned))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&preferences); err != nil {
 		return preferences, fmt.Errorf("parse AI preferences: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return preferences, errors.New("parse AI preferences: trailing JSON data")
 	}
 	preferences.Genres = normalizeTerms(preferences.Genres)
 	preferences.ExcludedGenres = normalizeTerms(preferences.ExcludedGenres)
@@ -80,7 +93,27 @@ func ParseMoviePreferences(raw string) (models.MoviePreferences, error) {
 	if preferences.MaxResults < 1 || preferences.MaxResults > 10 {
 		preferences.MaxResults = 5
 	}
+	if err := validatePreferences(preferences); err != nil {
+		return preferences, err
+	}
 	return preferences, nil
+}
+
+func validatePreferences(preferences models.MoviePreferences) error {
+	if len(preferences.Genres) > 10 || len(preferences.ExcludedGenres) > 10 || len(preferences.Keywords) > 10 {
+		return errors.New("AI preferences contain too many values")
+	}
+	for _, values := range [][]string{preferences.Genres, preferences.ExcludedGenres, preferences.Keywords} {
+		for _, value := range values {
+			if len([]rune(value)) > 50 {
+				return errors.New("AI preference value is too long")
+			}
+		}
+	}
+	if len([]rune(preferences.Mood)) > 100 {
+		return errors.New("AI mood value is too long")
+	}
+	return nil
 }
 
 func normalizeTerms(values []string) []string {
@@ -101,20 +134,17 @@ func normalizeTerms(values []string) []string {
 	return result
 }
 
-func (s *RecommendationService) Recommend(ctx context.Context, query string, history []string, excludedMovieIDs []string) (models.RecommendationResponse, error) {
+func (s *RecommendationService) Recommend(ctx context.Context, userID, query string, history []string, excludedMovieIDs []string) (response models.RecommendationResponse, resultErr error) {
+	startedAt := time.Now()
+	attempts := 0
+	defer func() {
+		s.audit(userID, query, attempts, startedAt, resultErr)
+	}()
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return models.RecommendationResponse{}, errors.New("recommendation query is empty")
 	}
-	prompt := preferencePrompt + query
-	if len(history) > 0 {
-		prompt += "\nRecent conversation context: " + strings.Join(history, " | ")
-	}
-	raw, err := s.generator.Generate(ctx, prompt)
-	if err != nil {
-		return models.RecommendationResponse{}, fmt.Errorf("extract movie preferences: %w", err)
-	}
-	preferences, err := ParseMoviePreferences(raw)
+	preferences, attempts, err := s.extractPreferences(ctx, query, history)
 	if err != nil {
 		return models.RecommendationResponse{}, err
 	}
@@ -133,13 +163,55 @@ func (s *RecommendationService) Recommend(ctx context.Context, query string, his
 	}
 	items := make([]models.MovieRecommendation, 0, len(movies))
 	for _, movie := range movies {
-		items = append(items, models.MovieRecommendation{
-			Movie:  movie,
-			Score:  movie.Ranking.RankingValue,
-			Reason: BuildRecommendationReason(movie, preferences),
-		})
+		items = append(items, models.MovieRecommendation{Movie: movie, Score: movie.Ranking.RankingValue, Reason: BuildRecommendationReason(movie, preferences)})
 	}
 	return models.RecommendationResponse{Query: query, Preferences: preferences, Recommendations: items}, nil
+}
+
+func (s *RecommendationService) extractPreferences(ctx context.Context, query string, history []string) (models.MoviePreferences, int, error) {
+	prompt := preferencePrompt + query
+	if len(history) > 0 {
+		prompt += "\nRecent conversation context: " + strings.Join(history, " | ")
+	}
+	raw, err := s.generator.Generate(ctx, prompt)
+	if err != nil {
+		return models.MoviePreferences{}, 1, fmt.Errorf("extract movie preferences: %w", err)
+	}
+	preferences, err := ParseMoviePreferences(raw)
+	if err == nil {
+		return preferences, 1, nil
+	}
+	if len(raw) > 4000 {
+		raw = raw[:4000]
+	}
+	repairPrompt := `Repair the following output into exactly one JSON object with only these fields: genres, excluded_genres, keywords, mood, max_results. Return JSON only. Output: ` + raw
+	repaired, repairErr := s.generator.Generate(ctx, repairPrompt)
+	if repairErr != nil {
+		return models.MoviePreferences{}, 2, fmt.Errorf("repair AI preferences: %w", repairErr)
+	}
+	preferences, err = ParseMoviePreferences(repaired)
+	if err != nil {
+		return models.MoviePreferences{}, 2, fmt.Errorf("AI preferences invalid after repair: %w", err)
+	}
+	return preferences, 2, nil
+}
+
+func (s *RecommendationService) audit(userID, query string, attempts int, startedAt time.Time, resultErr error) {
+	if s.audits == nil {
+		return
+	}
+	status, errorCode := "success", ""
+	if resultErr != nil {
+		status, errorCode = "failed", "recommendation_failed"
+	}
+	hash := sha256.Sum256([]byte(query))
+	audit := models.AIInvocationAudit{
+		UserID: userID, QueryHash: fmt.Sprintf("%x", hash), Model: os.Getenv("OPENAI_MODEL"), Status: status,
+		Attempts: attempts, DurationMS: time.Since(startedAt).Milliseconds(), ErrorCode: errorCode, CreatedAt: time.Now().UTC(),
+	}
+	auditCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = s.audits.InsertOne(auditCtx, audit)
 }
 
 func buildMovieFilter(preferences models.MoviePreferences, excludedMovieIDs []string) bson.M {

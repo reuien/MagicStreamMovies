@@ -51,8 +51,8 @@ func RecommendMoviesWithAI() gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "unable to load recommendation preferences"})
 			return
 		}
-		recommender := services.NewRecommendationService(movieStore(), generator)
-		response, err := recommender.Recommend(ctx, request.Message, history, excludedMovieIDs)
+		recommender := services.NewRecommendationService(movieStore(), generator, database.OpenCollection("ai_invocation_audits"))
+		response, err := recommender.Recommend(ctx, userID, request.Message, history, excludedMovieIDs)
 		if err != nil {
 			status := http.StatusBadGateway
 			if errors.Is(err, ctx.Err()) {
